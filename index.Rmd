@@ -1,0 +1,123 @@
+---
+title: "weight-lifting"
+author: "Bruno Hanzen"
+date: "18 novembre 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#library(knitr)
+#knit2html('./myNotes.Rmd')
+```
+
+# Prediction Assignment Writeup
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks.
+
+6 participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The goal is to predict the way they performed using data from accelerometers on the belt, forearm, arm, and dumbell.
+
+## Exploratory Data Analysis
+
+ We have 2 data sets: training and test. In the training set, we have the information about how the participants performed the exercise (the "classe" variable) and a large number of variables.
+In the test set, we have 20 observations with the same variables, except the "classe", which is unknown. The objective is the predict the "class" for the 20 observations.
+
+The original data were produced during a research reported in "Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013."
+
+
+
+ A cursory look at the data shows that we have lots of very sparse columns. According to the original article about the study, those columns are in fact statistical aggregates (max, min, average, kurtosis, ...) of data during a given sequence. In the test set, those columns hold "NA", so they are unusable for a prediction. We can safely drop them. Incidentally, the original article used them to identify the "classe" of a whole sequence.
+ 
+ Some other variables, (X, num_window, raw_timestamp_part_1, raw_timestamp_part_2) are not directly linked tot he way the exercise was performed, so we also drop them. We now have a "long" data format, each line corresponding to a single measurement. We ended up with 19,622 observations of 53 variables ("classe" + 52 other variables).
+ 
+```{r exploratory}
+library(dplyr)
+library(caret)
+data<-read.csv(file = "Z:/Professionnel/Cours/DataScience/Machine Learning/pml-training.csv")
+test<-read.csv(file = "Z:/Professionnel/Cours/DataScience/Machine Learning/pml-testing.csv")
+data.classe<-data$classe
+fdata <- as.data.frame(lapply(data, function(x) suppressWarnings(as.numeric(as.character(x)))))
+fdata<-fdata[,colSums(is.na(fdata))/nrow(fdata)<0.1]
+fdata<-fdata %>% dplyr::select(-X, -num_window, -raw_timestamp_part_1, -raw_timestamp_part_2)
+fdata$classe<-data.classe 
+```
+ 
+## Algorithm Selection
+
+ This is a classification problem, with discrete outcome and continuous predictors. We tried some "basic" algorithms and compared their performance: K-Means, Linear Discriminant Analysis, Naive Bayes, Trees, Random Forest and Boosting with trees. Naive Byaes and Boost results are not showhn here due to execution time and memory usage considerations.
+ We used a rather "brute force" approach: try to predict "classe" by all other variables without any other kind of preliminary research or adjustment.
+```{r algorithms}
+set.seed(1)
+system.time(km<-kmeans(fdata[,1:52], 5))
+table(km$cluster, fdata$classe)
+set.seed(2)
+system.time(lda<-train(classe~., data=fdata, method="lda"))
+print(lda)
+# system.time(nb<-train(classe~., data=fdata, method="nb"))
+# print(nb)
+set.seed(3)
+system.time(tree<-train(classe~., data=fdata, method="rpart"))
+print(tree)
+set.seed(4)
+system.time(rf<-train(classe~., data=fdata, method="rf"))
+print(rf)
+print(rf$finalModel)
+plot(rf$finalModel)
+#system.time(boost<-train(classe~., data=fdata, method="gbm"))
+#print(boost)
+```
+
+Random Forest stands head and shoulders above the crowd. By the way, this algorithm was also used in the original article.
+
+## Results discussion and tuning
+
+The random forest algorithm gives an "OOB" error of less than 1%, which is quite satifying, but the execution time is quite long. We can try to reduce the execution time and/or error rate by reducing the number of trees and identifying the most correlated variables and removing them.
+
+The graph shows that the error rate stabilises after less than 100 trees, while the default value is 500 trees. So, we first try a run with 100 trees.
+
+Then we remove the most correlated variables.
+
+```{r tuning}
+set.seed(5)
+system.time(rf100<-train(classe~., data=fdata, method="rf", ntree=100))
+print(rf100)
+plot(rf100$finalModel)
+fdata.cor<-cor(fdata[,1:52])
+findCorrelation(fdata.cor, name=TRUE)
+fdata2<-fdata %>% dplyr::select(-accel_belt_z, -roll_belt, -accel_belt_y, -accel_belt_x, -gyros_dumbbell_x, -gyros_arm_x)
+set.seed(6)
+system.time(rf2<-train(classe~., data=fdata2, method="rf", ntree=100))
+print(rf2)
+print(rf2$finalModel)
+fdata2.cor<-cor(fdata[,1:46])
+findCorrelation(fdata2.cor, name=TRUE)
+fdata3<-fdata2 %>% dplyr::select(-gyros_dumbbell_z)
+set.seed(7)
+system.time(rf3<-train(classe~., data=fdata3, method="rf", ntree=100))
+print(rf3)
+print(rf3$finalModel)
+plot(rf3$finalModel)
+varImpPlot(rf3$finalModel)
+```
+
+## Conclusions
+
+Reducing the number of trees has a dramatic impact on run time. Unfortunately, this can only be done a posteriori, when we see the graph.
+Reducing the number of variables based on correlation can be done a priori, but has a limited impact on run time and accuracy.
+
+This should not be a surprise, as random forest is an ensemble algorithm selecting the most appropriate variables, and caret's train implementation for random forest includes some optimisation of the algoritm's parameters.
+
+Anyway, the impact of those optimisations on accuracy is very limited, making them quite pointless, at least in this case.
+
+## Predictions
+
+We base the prediction on the model that has the highest accuracy, in this case rf3. The OOB error is estimated at 0.42%
+
+```{r prediction}
+prediction<-predict(rf3, test)
+print(prediction)
+```
+We will submit those values to the quiz. The suspense is unbearable (unless you cheat and have a look at the original full dataset: http://groupware.les.inf.puc-rio.br/static/WLE/WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv).
+
